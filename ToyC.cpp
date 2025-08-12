@@ -686,7 +686,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // 读取源码文件
     ifstream fin(inFile);
     if (!fin.is_open()) {
         cerr << "Cannot open input file: " << inFile << "\n";
@@ -694,18 +693,13 @@ int main(int argc, char **argv) {
     }
     string code((istreambuf_iterator<char>(fin)), istreambuf_iterator<char>());
 
-    // 词法分析
     Lexer lex(code);
-
-    // 语法分析
     Parser parser(lex);
     vector<FuncPtr> funcs = parser.parseProgram();
 
-    // 语义检查
     SemanticAnalyzer sema;
     sema.analyze(funcs);
 
-    // 代码生成
     ofstream fout(outFile);
     if (!fout.is_open()) {
         cerr << "Cannot open output file: " << outFile << "\n";
