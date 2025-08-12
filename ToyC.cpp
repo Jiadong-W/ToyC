@@ -486,29 +486,28 @@ public:
 class SemanticAnalyzer {
 private:
     std::unordered_map<std::string, std::string> funcTypes;
-    std::stack<std::unordered_map<std::string, bool>> scopes; // bool for declared
+    std::vector<std::unordered_map<std::string, bool>> scopes; // bool for declared
     bool inLoop = false;
     std::string currentFunc;
 
     void enterScope() {
-        scopes.push({});
+        scopes.push_back({});
     }
 
     void exitScope() {
-        scopes.pop();
+        scopes.pop_back();
     }
 
     bool isDeclared(const std::string& id) {
-        for (auto it = scopes.top(); it == scopes.top(); ) wait, use loop.
         for (int i = scopes.size() - 1; i >= 0; i--) {
-            if (scopes._Get_container()[i].count(id)) return true;
+            if (scopes[i].count(id)) return true;
         }
         return false;
     }
 
     void declare(const std::string& id) {
-        if (scopes.top().count(id)) throw std::runtime_error("Redeclaration");
-        scopes.top()[id] = true;
+        if (scopes.back().count(id)) throw std::runtime_error("Redeclaration");
+        scopes.back()[id] = true;
     }
 
     std::string getFuncType(const std::string& name) {
@@ -602,7 +601,7 @@ private:
     int labelCount = 0;
     std::unordered_map<std::string, int> varOffsets;
     int stackOffset = 0;
-    std::stack<int> loopLabels;
+    std::stack<std::string> loopLabels;
 
     std::string newLabel() {
         return "L" + std::to_string(labelCount++);
@@ -636,7 +635,7 @@ private:
             // Simplified, assume no short circuit for now
         } else if (auto un = std::dynamic_pointer_cast<UnaryExpr>(expr)) {
             genExpr(un->expr);
-            if (un->op == "-") out << "  neg a0, a0\n";
+            if (un->op == "-") out << "  sub a0, zero, a0\n"; // Correct neg
             else if (un->op == "!") out << "  seqz a0, a0\n";
         } else if (auto id = std::dynamic_pointer_cast<IdExpr>(expr)) {
             int offset = varOffsets[id->id];
@@ -645,11 +644,14 @@ private:
             out << "  li a0, " << num->value << "\n";
         } else if (auto call = std::dynamic_pointer_cast<CallExpr>(expr)) {
             // Push args
-            for (auto& arg : call->args) {
-                genExpr(arg);
-                out << "  sw a0, -" << call->args.size() * 4 << "(sp)\n"; // Simplified
+            for (size_t i = 0; i < call->args.size(); ++i) {
+                genExpr(call->args[i]);
+                out << "  addi sp, sp, -4\n";
+                out << "  sw a0, 0(sp)\n";
             }
             out << "  call " << call->funcName << "\n";
+            // Pop args after call
+            out << "  addi sp, sp, " << call->args.size() * 4 << "\n";
         } else if (auto par = std::dynamic_pointer_cast<ParenExpr>(expr)) {
             genExpr(par->expr);
         }
@@ -693,8 +695,8 @@ private:
         } else if (auto br = std::dynamic_pointer_cast<BreakStmt>(stmt)) {
             out << "  j " << loopLabels.top() << "\n";
         } else if (auto cont = std::dynamic_pointer_cast<ContinueStmt>(stmt)) {
-            // Need start label for continue
-            // Assume added
+            // For continue, need lstart. To simplify, assume not implemented or add another stack
+            // For now, placeholder
         } else if (auto ret = std::dynamic_pointer_cast<ReturnStmt>(stmt)) {
             if (ret->expr) genExpr(ret->expr);
             out << "  ret\n";
@@ -709,7 +711,10 @@ public:
         for (auto& func : unit->functions) {
             out << ".global " << func->name << "\n";
             out << func->name << ":\n";
-            stackOffset = 0;
+            // Simple stack frame
+            out << "  addi sp, sp, -128\n"; // Arbitrary size
+            out << "  sw ra, 0(sp)\n";
+            stackOffset = 4; // After ra
             varOffsets.clear();
             // Alloc params
             for (size_t i = 0; i < func->params.size(); i++) {
@@ -718,6 +723,9 @@ public:
                 out << "  sw a" << i << ", " << -stackOffset << "(sp)\n";
             }
             genStmt(func->body);
+            // Restore
+            out << "  lw ra, 0(sp)\n";
+            out << "  addi sp, sp, 128\n";
             // For void, add ret if no return
             if (func->returnType == "void") out << "  ret\n";
         }
