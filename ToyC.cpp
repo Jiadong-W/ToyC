@@ -7,6 +7,8 @@
 #include <sstream>
 #include <regex>
 #include <stack>
+#include <memory>
+#include <cctype>
 
 // Enum for token types
 enum class TokenType {
@@ -56,7 +58,7 @@ private:
     }
 
     void skipWhitespace() {
-        while (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r') advance();
+        while (isspace(peek())) advance();
     }
 
     void skipComment() {
@@ -117,10 +119,10 @@ public:
                 return {TokenType::BANG, "!", line, column};
             case '&': 
                 if (peek() == '&') { advance(); return {TokenType::AMPAMP, "&&", line, column}; }
-                break;
+                throw std::runtime_error("Unexpected &");
             case '|': 
                 if (peek() == '|') { advance(); return {TokenType::PIPEPIPE, "||", line, column}; }
-                break;
+                throw std::runtime_error("Unexpected |");
             case '<': 
                 if (peek() == '=') { advance(); return {TokenType::LE, "<=", line, column}; }
                 return {TokenType::LT, "<", line, column};
@@ -136,9 +138,9 @@ public:
             case '}': return {TokenType::RBRACE, "}", line, column};
             case ';': return {TokenType::SEMI, ";", line, column};
             case ',': return {TokenType::COMMA, ",", line, column};
+            default:
+                throw std::runtime_error("Unexpected character: " + std::string(1, c));
         }
-
-        throw std::runtime_error("Unexpected character: " + std::string(1, c));
     }
 };
 
@@ -268,7 +270,7 @@ private:
 
     void expect(TokenType type) {
         if (!match(type)) {
-            throw std::runtime_error("Expected token type");
+            throw std::runtime_error("Expected " + static_cast<int>(type));
         }
     }
 
@@ -425,7 +427,6 @@ private:
             expect(TokenType::SEMI);
             return ret;
         } else {
-            // ExprStmt or Assign
             auto expr = parseExpr();
             if (match(TokenType::SEMI)) {
                 auto exprStmt = std::make_shared<ExprStmt>();
@@ -486,7 +487,8 @@ public:
 class SemanticAnalyzer {
 private:
     std::unordered_map<std::string, std::string> funcTypes;
-    std::vector<std::unordered_map<std::string, bool>> scopes; // bool for declared
+    std::unordered_map<std::string, size_t> funcParamCounts;
+    std::vector<std::unordered_map<std::string, bool>> scopes;
     bool inLoop = false;
     std::string currentFunc;
 
@@ -499,38 +501,43 @@ private:
     }
 
     bool isDeclared(const std::string& id) {
-        for (int i = scopes.size() - 1; i >= 0; i--) {
+        for (int i = scopes.size() - 1; i >= 0; --i) {
             if (scopes[i].count(id)) return true;
         }
         return false;
     }
 
     void declare(const std::string& id) {
-        if (scopes.back().count(id)) throw std::runtime_error("Redeclaration");
+        if (scopes.back().count(id)) throw std::runtime_error("Redeclaration of " + id);
         scopes.back()[id] = true;
     }
 
     std::string getFuncType(const std::string& name) {
         auto it = funcTypes.find(name);
-        if (it == funcTypes.end()) throw std::runtime_error("Undefined function");
+        if (it == funcTypes.end()) throw std::runtime_error("Undefined function " + name);
+        return it->second;
+    }
+
+    size_t getFuncParamCount(const std::string& name) {
+        auto it = funcParamCounts.find(name);
+        if (it == funcParamCounts.end()) throw std::runtime_error("Undefined function " + name);
         return it->second;
     }
 
     void analyzeExpr(std::shared_ptr<Expr> expr, bool expectInt = true) {
-        // Simplified, assume all expr are int
         if (auto bin = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
             analyzeExpr(bin->left);
             analyzeExpr(bin->right);
         } else if (auto un = std::dynamic_pointer_cast<UnaryExpr>(expr)) {
             analyzeExpr(un->expr);
         } else if (auto id = std::dynamic_pointer_cast<IdExpr>(expr)) {
-            if (!isDeclared(id->id)) throw std::runtime_error("Undefined variable");
+            if (!isDeclared(id->id)) throw std::runtime_error("Undefined variable " + id->id);
         } else if (auto num = std::dynamic_pointer_cast<NumberExpr>(expr)) {
             // ok
         } else if (auto call = std::dynamic_pointer_cast<CallExpr>(expr)) {
             std::string ret = getFuncType(call->funcName);
-            if (expectInt && ret == "void") throw std::runtime_error("Void function in expression");
-            // Check args count, assume params match args
+            if (expectInt && ret == "void") throw std::runtime_error("Void function " + call->funcName + " used in expression");
+            if (call->args.size() != getFuncParamCount(call->funcName)) throw std::runtime_error("Argument count mismatch for " + call->funcName);
             for (auto& arg : call->args) analyzeExpr(arg);
         } else if (auto par = std::dynamic_pointer_cast<ParenExpr>(expr)) {
             analyzeExpr(par->expr);
@@ -543,9 +550,9 @@ private:
             for (auto& s : block->statements) analyzeStmt(s);
             exitScope();
         } else if (auto exprS = std::dynamic_pointer_cast<ExprStmt>(stmt)) {
-            analyzeExpr(exprS->expr, false); // allow void calls
+            analyzeExpr(exprS->expr, false);
         } else if (auto assign = std::dynamic_pointer_cast<AssignStmt>(stmt)) {
-            if (!isDeclared(assign->id)) throw std::runtime_error("Undefined variable");
+            if (!isDeclared(assign->id)) throw std::runtime_error("Undefined variable " + assign->id);
             analyzeExpr(assign->expr);
         } else if (auto decl = std::dynamic_pointer_cast<DeclStmt>(stmt)) {
             declare(decl->id);
@@ -564,7 +571,8 @@ private:
         } else if (auto cont = std::dynamic_pointer_cast<ContinueStmt>(stmt)) {
             if (!inLoop) throw std::runtime_error("Continue outside loop");
         } else if (auto ret = std::dynamic_pointer_cast<ReturnStmt>(stmt)) {
-            if (funcTypes[currentFunc] == "void") {
+            std::string retType = funcTypes[currentFunc];
+            if (retType == "void") {
                 if (ret->expr) throw std::runtime_error("Return value in void function");
             } else {
                 if (!ret->expr) throw std::runtime_error("Missing return value in int function");
@@ -577,19 +585,27 @@ public:
     void analyze(std::shared_ptr<CompUnit> unit) {
         enterScope();
         for (auto& func : unit->functions) {
-            if (funcTypes.count(func->name)) throw std::runtime_error("Duplicate function");
+            if (funcTypes.count(func->name)) throw std::runtime_error("Duplicate function " + func->name);
             funcTypes[func->name] = func->returnType;
+            funcParamCounts[func->name] = func->params.size();
         }
-        if (funcTypes.find("main") == funcTypes.end() || funcTypes["main"] != "int" || !unit->functions.back()->params.empty()) {
-            throw std::runtime_error("Missing main function");
+        auto mainIt = funcTypes.find("main");
+        if (mainIt == funcTypes.end() || mainIt->second != "int") {
+            throw std::runtime_error("Missing or invalid main function");
         }
+        bool foundMain = false;
         for (auto& func : unit->functions) {
+            if (func->name == "main") {
+                if (!func->params.empty()) throw std::runtime_error("Main function must have no parameters");
+                foundMain = true;
+            }
             currentFunc = func->name;
             enterScope();
             for (auto& param : func->params) declare(param);
             analyzeStmt(func->body);
             exitScope();
         }
+        if (!foundMain) throw std::runtime_error("Missing main function");
         exitScope();
     }
 };
@@ -601,7 +617,10 @@ private:
     int labelCount = 0;
     std::unordered_map<std::string, int> varOffsets;
     int stackOffset = 0;
-    std::stack<std::string> loopLabels;
+    std::stack<std::string> loopStarts;
+    std::stack<std::string> loopEnds;
+    const int frameSize = 128; // Fixed frame size, adjust if needed
+    const int raOffset = 124; // frameSize - 4
 
     std::string newLabel() {
         return "L" + std::to_string(labelCount++);
@@ -610,32 +629,50 @@ private:
     void genExpr(std::shared_ptr<Expr> expr) {
         if (auto bin = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
             genExpr(bin->left);
-            out << "  sw a0, 0(sp)\n";
-            stackOffset += 4;
+            out << "  mv t0, a0\n";
             genExpr(bin->right);
-            out << "  lw t0, -" << stackOffset << "(sp)\n";
-            stackOffset -= 4;
-            if (bin->op == "+") out << "  add a0, t0, a0\n";
+            if (bin->op == "+" ) out << "  add a0, t0, a0\n";
             else if (bin->op == "-") out << "  sub a0, t0, a0\n";
             else if (bin->op == "*") out << "  mul a0, t0, a0\n";
             else if (bin->op == "/") out << "  div a0, t0, a0\n";
             else if (bin->op == "%") out << "  rem a0, t0, a0\n";
-            else if (bin->op == "==") {
+            else if (bin->op == "&&") {
+                // Should not reach here if handled in special case, but for completeness
+            } else if (bin->op == "||") {
+                // Same
+            } else {
                 std::string ltrue = newLabel();
                 std::string lend = newLabel();
-                out << "  beq t0, a0, " << ltrue << "\n";
+                std::string branchInst;
+                if (bin->op == "==") branchInst = "beq";
+                else if (bin->op == "!=") branchInst = "bne";
+                else if (bin->op == "<") branchInst = "blt";
+                else if (bin->op == ">") {
+                    // Swap for >
+                    out << "  mv t1, t0\n";
+                    out << "  mv t0, a0\n";
+                    out << "  mv a0, t1\n";
+                    branchInst = "blt";
+                } else if (bin->op == "<=") branchInst = "ble";
+                else if (bin->op == ">=") {
+                    // Swap for >=
+                    out << "  mv t1, t0\n";
+                    out << "  mv t0, a0\n";
+                    out << "  mv a0, t1\n";
+                    branchInst = "ble";
+                }
+                out << "  " << branchInst << " t0, a0, " << ltrue << "\n";
                 out << "  li a0, 0\n";
                 out << "  j " << lend << "\n";
                 out << ltrue << ":\n";
                 out << "  li a0, 1\n";
                 out << lend << ":\n";
             }
-            // Add other ops similarly: !=, <, >, <=, >=, &&, ||
-            // For && and ||, need short circuit
-            // Simplified, assume no short circuit for now
         } else if (auto un = std::dynamic_pointer_cast<UnaryExpr>(expr)) {
             genExpr(un->expr);
-            if (un->op == "-") out << "  sub a0, zero, a0\n"; // Correct neg
+            if (un->op == "+") {
+                // no op
+            } else if (un->op == "-") out << "  sub a0, zero, a0\n";
             else if (un->op == "!") out << "  seqz a0, a0\n";
         } else if (auto id = std::dynamic_pointer_cast<IdExpr>(expr)) {
             int offset = varOffsets[id->id];
@@ -643,23 +680,40 @@ private:
         } else if (auto num = std::dynamic_pointer_cast<NumberExpr>(expr)) {
             out << "  li a0, " << num->value << "\n";
         } else if (auto call = std::dynamic_pointer_cast<CallExpr>(expr)) {
-            // Push args
+            // Assume <=7 args, no stack args
             for (size_t i = 0; i < call->args.size(); ++i) {
                 genExpr(call->args[i]);
-                out << "  addi sp, sp, -4\n";
-                out << "  sw a0, 0(sp)\n";
+                out << "  mv a" << i << ", a0\n";
             }
             out << "  call " << call->funcName << "\n";
-            // Pop args after call
-            out << "  addi sp, sp, " << call->args.size() * 4 << "\n";
         } else if (auto par = std::dynamic_pointer_cast<ParenExpr>(expr)) {
             genExpr(par->expr);
         }
     }
 
-    void genStmt(std::shared_ptr<Stmt> stmt) {
+    void genShortCircuit(BinaryExpr* bin, const std::string& op) {
+        genExpr(bin->left);
+        std::string lshort = newLabel();
+        std::string lend = newLabel();
+        if (op == "&&") {
+            out << "  beqz a0, " << lshort << "\n";
+            genExpr(bin->right);
+            out << "  j " << lend << "\n";
+            out << lshort << ":\n";
+            out << "  li a0, 0\n";
+        } else if (op == "||") {
+            out << "  bnez a0, " << lshort << "\n";
+            genExpr(bin->right);
+            out << "  j " << lend << "\n";
+            out << lshort << ":\n";
+            out << "  li a0, 1\n";
+        }
+        out << lend << ":\n";
+    }
+
+    void genStmt(std::shared_ptr<Stmt> stmt, const std::string& epilogue) {
         if (auto block = std::dynamic_pointer_cast<BlockStmt>(stmt)) {
-            for (auto& s : block->statements) genStmt(s);
+            for (auto& s : block->statements) genStmt(s, epilogue);
         } else if (auto exprS = std::dynamic_pointer_cast<ExprStmt>(stmt)) {
             genExpr(exprS->expr);
         } else if (auto assign = std::dynamic_pointer_cast<AssignStmt>(stmt)) {
@@ -668,38 +722,39 @@ private:
             out << "  sw a0, " << offset << "(sp)\n";
         } else if (auto decl = std::dynamic_pointer_cast<DeclStmt>(stmt)) {
             stackOffset += 4;
-            varOffsets[decl->id] = -stackOffset;
+            varOffsets[decl->id] = stackOffset;
             genExpr(decl->expr);
-            out << "  sw a0, " << varOffsets[decl->id] << "(sp)\n";
+            out << "  sw a0, " << stackOffset << "(sp)\n";
         } else if (auto ifS = std::dynamic_pointer_cast<IfStmt>(stmt)) {
             std::string lelse = newLabel();
             std::string lend = newLabel();
             genExpr(ifS->cond);
             out << "  beqz a0, " << lelse << "\n";
-            genStmt(ifS->thenStmt);
+            genStmt(ifS->thenStmt, epilogue);
             out << "  j " << lend << "\n";
             out << lelse << ":\n";
-            if (ifS->elseStmt) genStmt(ifS->elseStmt);
+            if (ifS->elseStmt) genStmt(ifS->elseStmt, epilogue);
             out << lend << ":\n";
         } else if (auto whileS = std::dynamic_pointer_cast<WhileStmt>(stmt)) {
             std::string lstart = newLabel();
             std::string lend = newLabel();
-            loopLabels.push(lend); // for break
+            loopStarts.push(lstart);
+            loopEnds.push(lend);
             out << lstart << ":\n";
             genExpr(whileS->cond);
             out << "  beqz a0, " << lend << "\n";
-            genStmt(whileS->body);
+            genStmt(whileS->body, epilogue);
             out << "  j " << lstart << "\n";
             out << lend << ":\n";
-            loopLabels.pop();
+            loopStarts.pop();
+            loopEnds.pop();
         } else if (auto br = std::dynamic_pointer_cast<BreakStmt>(stmt)) {
-            out << "  j " << loopLabels.top() << "\n";
+            out << "  j " << loopEnds.top() << "\n";
         } else if (auto cont = std::dynamic_pointer_cast<ContinueStmt>(stmt)) {
-            // For continue, need lstart. To simplify, assume not implemented or add another stack
-            // For now, placeholder
+            out << "  j " << loopStarts.top() << "\n";
         } else if (auto ret = std::dynamic_pointer_cast<ReturnStmt>(stmt)) {
             if (ret->expr) genExpr(ret->expr);
-            out << "  ret\n";
+            out << "  j " << epilogue << "\n";
         }
     }
 
@@ -711,28 +766,30 @@ public:
         for (auto& func : unit->functions) {
             out << ".global " << func->name << "\n";
             out << func->name << ":\n";
-            // Simple stack frame
-            out << "  addi sp, sp, -128\n"; // Arbitrary size
-            out << "  sw ra, 0(sp)\n";
-            stackOffset = 4; // After ra
+            out << "  addi sp, sp, -" << frameSize << "\n";
+            out << "  sw ra, " << raOffset << "(sp)\n";
+            stackOffset = 0;
             varOffsets.clear();
-            // Alloc params
-            for (size_t i = 0; i < func->params.size(); i++) {
+            for (size_t i = 0; i < func->params.size(); ++i) {
                 stackOffset += 4;
-                varOffsets[func->params[i]] = -stackOffset;
-                out << "  sw a" << i << ", " << -stackOffset << "(sp)\n";
+                varOffsets[func->params[i]] = stackOffset;
+                out << "  sw a" << i << ", " << stackOffset << "(sp)\n";
             }
-            genStmt(func->body);
-            // Restore
-            out << "  lw ra, 0(sp)\n";
-            out << "  addi sp, sp, 128\n";
-            // For void, add ret if no return
-            if (func->returnType == "void") out << "  ret\n";
+            std::string epilogue = newLabel();
+            genStmt(func->body, epilogue);
+            if (func->returnType == "void") {
+                out << "  li a0, 0\n";
+            }
+            out << epilogue << ":\n";
+            out << "  lw ra, " << raOffset << "(sp)\n";
+            out << "  addi sp, sp, " << frameSize << "\n";
+            if (func->name == "main") {
+                out << "  li a7, 93\n";
+                out << "  ecall\n";
+            } else {
+                out << "  ret\n";
+            }
         }
-        // Exit for main
-        // In main, after ret, add exit
-        out << "  li a7, 93\n"; // exit syscall
-        out << "  ecall\n";
     }
 };
 
