@@ -668,7 +668,8 @@ int main(int argc, char **argv) {
     cin.tie(nullptr);
 
     if (argc < 4) {
-        cerr << "Usage: ./ToyC input.tc -o out.s\n";
+        cerr << "Usage: ./ToyC input.tc -o out.s
+";
         return 1;
     }
 
@@ -682,7 +683,8 @@ int main(int argc, char **argv) {
     }
 
     if (outFile.empty()) {
-        cerr << "Output file not specified with -o\n";
+        cerr << "Output file not specified with -o
+";
         return 1;
     }
 
@@ -693,20 +695,19 @@ int main(int argc, char **argv) {
     }
     string code((istreambuf_iterator<char>(fin)), istreambuf_iterator<char>());
 
-    Lexer lex(code);
-    Parser parser(lex);
-    vector<FuncPtr> funcs = parser.parseProgram();
+    // 词法 + 语法分析
+    Lexer lexer(code);
+    Parser parser(lexer);
+    vector<shared_ptr<FuncDef>> funcs = parser.parse();
 
-    SemanticAnalyzer sema;
-    sema.analyze(funcs);
-
+    // 代码生成
     ofstream fout(outFile);
     if (!fout.is_open()) {
         cerr << "Cannot open output file: " << outFile << "\n";
         return 1;
     }
-    SimpleCodeGen cg(fout);
-    cg.gen(funcs);
+    SimpleCodeGen cg(funcs, fout);
+    cg.run();
 
     return 0;
 }
